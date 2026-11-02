@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AITalon — чат</title>
+<style>
+  :root { --bg:#12141a; --panel:#1b1e27; --line:#2a2f3c; --text:#e7e9ee; --dim:#8b93a7; --accent:#5b8cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 -apple-system,"SF Pro Text",system-ui,sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:24px 18px 40px; }
+  header { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:18px; }
+  h1 { font-size:19px; margin:0; font-weight:600; }
+  #who { color:var(--dim); font-size:13px; }
+  .hidden { display:none; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; }
+  /* Экран числа */
+  #gate { padding:40px 28px; text-align:center; }
+  #gate p { color:var(--dim); margin:6px 0 22px; }
+  #code { font-size:24px; letter-spacing:.18em; text-align:center; width:100%; padding:14px;
+          background:#0e1015; color:var(--text); border:1px solid var(--line); border-radius:12px; }
+  button { font:inherit; border:0; border-radius:11px; padding:11px 20px; background:var(--accent);
+           color:#fff; cursor:pointer; }
+  button:disabled { background:#3a4054; color:var(--dim); cursor:default; }
+  #gate button { margin-top:16px; width:100%; }
+  .err { color:#ff8080; font-size:14px; margin-top:12px; min-height:20px; }
+  /* Выбор модели */
+  .models { display:flex; gap:8px; margin-bottom:14px; }
+  .models button { flex:1; background:#0e1015; color:var(--dim); border:1px solid var(--line);
+                   padding:10px 8px; font-size:14px; }
+  .models button.on { background:#233152; color:#cfe0ff; border-color:var(--accent); }
+  /* Лента */
+  #log { padding:16px; max-height:56vh; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
+  .msg { padding:11px 14px; border-radius:12px; white-space:pre-wrap; word-break:break-word; }
+  .user { background:#233152; align-self:flex-end; max-width:82%; }
+  .bot { background:#0e1015; border:1px solid var(--line); align-self:flex-start; max-width:92%; }
+  .think { color:var(--dim); font-size:13px; font-style:italic; align-self:flex-start; max-width:92%; }
+  /* Ввод */
+  .composer { display:flex; gap:8px; margin-top:14px; }
+  #text { flex:1; resize:none; font:inherit; padding:12px 14px; background:var(--panel);
+          color:var(--text); border:1px solid var(--line); border-radius:12px; }
+  #foot { margin-top:12px; color:var(--dim); font-size:13px; display:flex; justify-content:space-between; gap:10px; }
+  button.link { background:none; color:var(--dim); padding:2px 4px; font-size:13px; text-decoration:underline; }
+  button.link:hover { color:var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="title">AITalon</h1>
+    <div id="who"></div>
+    <button id="exit" class="link hidden">Выйти</button>
+  </header>
+
+  <div id="gate" class="panel">
+    <h1>Введите код талона</h1>
+    <p>Его печатают на листке рядом с QR-кодом. Отсканированный QR подставляет сам.</p>
+    <input id="code" autocomplete="off" autocapitalize="characters" spellcheck="false"
+           placeholder="код с листка">
+    <button id="enter">Войти</button>
+    <div class="err" id="gate-err"></div>
+  </div>
+
+  <div id="chat" class="hidden">
+    <div class="models" id="models"></div>
+    <div class="panel"><div id="log"></div></div>
+    <div class="composer">
+      <textarea id="text" rows="2" placeholder="Напиши сообщение…"></textarea>
+      <button id="send">Отправить</button>
+    </div>
+    <div id="foot"><span id="spend"></span><span id="reset"></span></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let model = null, busy = false;
+
+async function jget(path, opts) {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
+}
+
+function showChat(code, models) {
+  $('gate').classList.add('hidden');
+  $('chat').classList.remove('hidden');
+  $('exit').classList.remove('hidden');
+  $('who').textContent = 'талон ' + code;
+  $('models').innerHTML = '';
+  models.forEach((m, i) => {
+    const b = document.createElement('button');
+    b.textContent = m; b.dataset.m = m;
+    b.onclick = () => setModel(m, b);
+    $('models').appendChild(b);
+    if (i === 0) b.click();
+  });
+  refreshUsage();
+}
+
+// У каждой модели свой разговор. Общий лог приводил к тому, что вторая модель
+// получала стенограмму первой и отвечала от её имени.
+function chatOf(m) { return chats[m] || (chats[m] = []); }
+
+function setModel(m, btn) {
+  model = m;
+  [...$('models').children].forEach(x => x.classList.toggle('on', x === btn));
+  paintSpend();
+  renderLog();
+}
+
+function renderLog() {
+  $('log').innerHTML = '';
+  chatOf(model).forEach(m => bubble(m.role === 'user' ? 'user' : 'bot', m.content));
+}
+
+function talonFromUrl() {
+  return new URLSearchParams(location.search).get("t") || "";
+}
+
+async function boot() {
+  const { data } = await jget('/api/me');
+  if (data.authorized) { showChat(data.code, data.models); return; }
+  const t = talonFromUrl();
+  if (t) {
+    // Отсканировали QR — вводить нечего, входим сразу.
+    $('code').value = t;
+    if (await submitCode(t)) { history.replaceState(null, '', location.pathname); return; }
+    $('gate-err').textContent += ' Код с листка можно ввести и руками.';
+    return;
+  }
+  $('code').focus();
+}
+
+async function submitCode(code) {
+  $('gate-err').textContent = '';
+  const r = await jget('/api/enter', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                       body: JSON.stringify({ code: code }) });
+  if (!r.ok) { $('gate-err').textContent = r.data.detail || 'Не получилось.'; return false; }
+  showChat(r.data.code, (await jget('/api/me')).data.models);
+  return true;
+}
+
+$('enter').onclick = () => submitCode($('code').value);
+$('code').addEventListener('keydown', e => { if (e.key === 'Enter') $('enter').click(); });
+
+function bubble(cls, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls; d.textContent = text;
+  $('log').appendChild(d); $('log').scrollTop = $('log').scrollHeight;
+  return d;
+}
+
+let usage = null;
+
+async function refreshUsage() {
+  const { data } = await jget('/api/usage');
+  if (data.tokens_used === undefined) return;
+  usage = data;
+  paintSpend();
+}
+
+// Счётчик токенов относится к zro и его суточной квоте. Когда выбран Qwen,
+// показывать его нельзя: Qwen токенов не расходует, и цифра начала бы врать.
+// Расход Qwen при этом продолжает записываться в базу — просто не на экране.
+function paintSpend() {
+  if (!usage) return;
+  const qwen = model === 'qwen';
+  $('spend').textContent = qwen ? '' :
+    'zro: ' + usage.tokens_used.toLocaleString('ru') + ' из ' + usage.quota.toLocaleString('ru') + ' токенов';
+  $('reset').textContent = (qwen || !usage.resets_at_utc) ? '' :
+    'обновление в ' + new Date(usage.resets_at_utc * 1000).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
+}
+
+$('exit').onclick = async () => {
+  await jget('/api/exit', { method: 'POST' });
+  location.reload();
+};
+
+async function send() {
+  const text = $('text').value.trim();
+  if (!text || busy) return;
+  const chat = chatOf(model);
+  busy = true;
+  const started = Date.now();
+  const tick = setInterval(() => {
+    $('send').textContent = 'Ждём ' + Math.round((Date.now() - started) / 1000) + ' с';
+  }, 1000);
+  $('send').disabled = true; $('send').textContent = 'Ждём 0 с';
+  $('text').value = '';
+  chat.push({ role: 'user', content: text });
+  bubble('user', text);
+  const think = bubble('think', model === 'qwen' ? 'открываю чат…' : 'размышляет…');
+  const bot = bubble('bot', '');
+  let answer = '';
+
+  try {
+    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                           body: JSON.stringify({ model, messages: chat }) });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      bot.textContent = d.detail || 'Сервер отказал.';
+    } else {
+      const reader = res.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n'); buf = parts.pop();
+        for (const p of parts) {
+          const line = p.split('\n').find(l => l.startsWith('data: '));
+          if (!line) continue;
+          const ev = JSON.parse(line.slice(6));
+          if (ev.type === 'reasoning') { think.textContent = 'размышляет… ' + ev.text.trim().slice(0, 90); }
+          else if (ev.type === 'note') { think.textContent = ev.text; }
+          else if (ev.type === 'content') { answer = ev.text; bot.textContent = answer; }
+          else if (ev.type === 'error') { bot.textContent = ev.message; }
+          else if (ev.type === 'done') { think.remove(); refreshUsage(); }
+        }
+        $('log').scrollTop = $('log').scrollHeight;
+      }
+    }
+  } catch (e) {
+    bot.textContent = 'Связь с сервером потеряна: ' + e.message;
+  }
+  // Текст ошибки в историю не пишем — иначе он уйдёт модели как её собственный ответ.
+  if (answer) chat.push({ role: 'assistant', content: answer });
+  think.remove();
+  clearInterval(tick);
+  $('send').disabled = false; $('send').textContent = 'Отправить';
+  busy = false; $('text').focus();
+}
+
+const chats = {};
+$('send').onclick = send;
+$('text').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+boot();
+</script>
+</body>
+</html>

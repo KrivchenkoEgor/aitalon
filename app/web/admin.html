@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AITalon — выдача талонов</title>
+<style>
+  :root { --bg:#12141a; --panel:#1b1e27; --line:#2a2f3c; --text:#e7e9ee; --dim:#8b93a7; --accent:#5b8cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,system-ui,sans-serif; }
+  .wrap { max-width:860px; margin:0 auto; padding:24px 18px 60px; }
+  h1 { font-size:19px; margin:0 0 4px; }
+  .dim { color:var(--dim); font-size:13px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; margin-top:16px; }
+  label { display:block; font-size:13px; color:var(--dim); margin-bottom:4px; }
+  input { font:inherit; width:100%; padding:10px 12px; background:#0e1015; color:var(--text);
+          border:1px solid var(--line); border-radius:10px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:130px; }
+  button { font:inherit; border:0; border-radius:10px; padding:10px 18px; background:var(--accent);
+           color:#fff; cursor:pointer; }
+  button.ghost { background:#0e1015; border:1px solid var(--line); color:var(--dim); }
+  button.danger { background:#5c2733; color:#ffd7dd; }
+  button:disabled { opacity:.5; cursor:default; }
+  table { width:100%; border-collapse:collapse; margin-top:10px; font-size:14px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--dim); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .err { color:#ff8080; font-size:14px; min-height:20px; margin-top:10px; }
+  .ok { color:#8fe3a8; font-size:14px; margin-top:10px; }
+  #clean { color:#9dbcff; font-size:14px; min-height:20px; margin-top:12px; }
+  a { color:#9dbcff; }
+  .hidden { display:none; }
+  .closed td { color:var(--dim); text-decoration:line-through; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Выдача талонов</h1>
+  <div class="dim" id="base"></div>
+
+  <div class="panel hidden" id="login">
+    <label>Ключ оператора</label>
+    <input id="key" type="password" autocomplete="off">
+    <div class="err" id="login-err"></div>
+    <button id="login-btn" style="margin-top:10px">Войти</button>
+  </div>
+
+  <div class="panel hidden" id="form">
+    <div class="row">
+      <div><label>Сколько талонов</label><input id="count" type="number" min="1" max="9999" value="20"></div>
+      <div><label>Век талона, часов</label><input id="talon" type="number" min="1" max="720" value="6"></div>
+      <div><label>Век документа, часов</label><input id="docw" type="number" min="1" max="720" value="24"></div>
+    </div>
+    <div class="err" id="err"></div>
+    <button id="make" style="margin-top:14px">Создать документ</button>
+    <span class="ok" id="ok"></span>
+  </div>
+
+  <div class="panel hidden" id="list">
+    <h1 style="font-size:16px">Документы</h1>
+    <table><thead><tr><th>Номер</th><th>Создан</th><th>Талонов</th><th>Вошло</th><th>Часы</th><th></th></tr></thead>
+    <tbody id="rows"></tbody></table>
+    <div id="clean"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+async function j(path, opts) {
+  const r = await fetch(path, opts);
+  const d = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, d };
+}
+
+function fmt(ts) {
+  return new Date(ts * 1000).toLocaleString('ru', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+
+function show(docs, base) {
+  $('base').textContent = 'в QR-код зашит адрес: ' + base;
+  $('login').classList.add('hidden');
+  $('form').classList.remove('hidden');
+  $('list').classList.remove('hidden');
+  $('rows').innerHTML = '';
+  docs.forEach(d => {
+    const tr = document.createElement('tr');
+    if (d.closed) tr.className = 'closed';
+    tr.innerHTML = '<td>' + d.num + '</td><td>' + fmt(d.created_at) + '</td><td>' + d.total +
+      '</td><td>' + d.used + '</td><td>' + d.talon_hours + ' / ' + d.doc_hours + '</td><td></td>';
+    const cell = tr.lastChild;
+    const sheet = document.createElement('a');
+    sheet.href = '/documents/' + d.id + '/sheet'; sheet.target = '_blank'; sheet.textContent = 'лист';
+    const pdf = document.createElement('a');
+    pdf.href = '/documents/' + d.id + '.pdf'; pdf.target = '_blank'; pdf.textContent = ' PDF';
+    cell.append(sheet, pdf);
+    if (!d.closed) {
+      const b = document.createElement('button');
+      b.className = 'danger'; b.textContent = ' закрыть'; b.style.marginLeft = '8px';
+      b.onclick = () => close(d.id);
+      cell.append(b);
+    } else {
+      cell.append(document.createTextNode('  закрыт'));
+    }
+    $('rows').append(tr);
+  });
+}
+
+async function refresh() {
+  const r = await j('/admin/documents');
+  if (r.status === 401 || r.status === 503) {
+    $('login').classList.remove('hidden');
+    $('form').classList.add('hidden');
+    $('list').classList.add('hidden');
+    $('login-err').textContent = r.d.detail || '';
+    $('key').focus();
+    return;
+  }
+  show(r.d.documents, r.d.base_url);
+}
+
+$('login-btn').onclick = async () => {
+  const r = await j('/admin/login', { method:'POST', headers:{'Content-Type':'application/json'},
+                                      body: JSON.stringify({ key: $('key').value }) });
+  if (!r.ok) { $('login-err').textContent = r.d.detail || 'Не пустил.'; return; }
+  $('key').value = '';
+  refresh();
+};
+$('key').addEventListener('keydown', e => { if (e.key === 'Enter') $('login-btn').click(); });
+
+async function close(id) {
+  if (!confirm('Закрыть документ? Погибнут и уже активированные талоны.')) return;
+  const r = await j('/admin/documents/' + id + '/close', { method:'POST' });
+  if (!r.ok) { $('err').textContent = 'Не закрылось: ' + (r.d.detail || r.status); return; }
+  refresh();
+  await clean(id, r.d.cleanup);
+}
+
+// Чаты удаляет фоновый движок, и это десятки секунд: цифра «сколько уже» обязана
+// наполняться на глазах, иначе оператор считает, что ничего не делается.
+async function clean(id, snap) {
+  if (!snap) return;
+  if (!snap.left) { if (snap.total) done(snap); return; }
+  const box = $('clean');
+  while (true) {
+    box.textContent = 'удаляем чаты: ' + snap.done + ' из ' + snap.total;
+    if (!snap.left) break;
+    await new Promise(res => setTimeout(res, 2000));
+    const r = await j('/admin/documents/' + id + '/cleanup');
+    if (!r.ok || !r.d.cleanup) break;
+    snap = r.d.cleanup;
+  }
+  done(snap);
+}
+
+function done(snap) {
+  const n = k => Object.values(snap.state).filter(v => v === k).length;
+  $('clean').textContent = 'чаты удалены: ' + n('deleted') +
+    ' · чатов не было: ' + n('missing') +
+    (n('gone') ? ' · уже не существовали: ' + n('gone') : '') +
+    (n('failed') ? ' · НЕ удалены: ' + n('failed') + ' (посмотри окно Qwen)' : '');
+}
+
+$('make').onclick = async () => {
+  $('err').textContent = ''; $('ok').textContent = '';
+  const r = await j('/admin/documents', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ count: +$('count').value, talon_hours: +$('talon').value,
+                           doc_hours: +$('docw').value }) });
+  if (!r.ok) { $('err').textContent = r.d.detail || 'Не создалось.'; return; }
+  $('ok').textContent = 'готов: ' + r.d.document.num;
+  window.open(r.d.sheet, '_blank');
+  refresh();
+};
+
+refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+# Секреты и личные данные — никогда не коммитить
+.env
+*.session
+
+# Рабочие данные: база, расход, выданные талоны
+db/
+
+# Всё, что создаёт браузерный источник во время работы
+qwwen/profile/
+qwwen/answers/
+qwwen/errors/
+qwwen/artifacts/
+qwwen/chats.json
+qwwen/*.log
+qwwen/.playwright-mcp/
+*.log
+
+# Системное и кэш
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/

@@ -1,0 +1,12 @@
+# Python 3.13 (/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13)
+# python3 в PATH — это 3.8, на нём FastAPI нет.
+fastapi==0.116.2
+uvicorn==0.35.0
+openai==1.99.9
+python-dotenv==1.1.1
+httpx==0.28.1
+pydantic==2.11.7
+segno==1.6.6          # генератор QR для талонов; чистый Python, зависимостей ноль
+playwright==1.55.0    # браузерный источник Qwen и печать PDF; встроенный Chromium
+                      # этому интерпретатору не подходит (ждёт сборку 1187), поэтому
+                      # запускаем настоящий Chrome через channel="chrome" — см. QWEN_CHANNEL
