@@ -4,6 +4,7 @@ import os
 import pathlib
 import queue
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -712,8 +713,28 @@ check("лист A4 собран по 10 на страницу", r.status_code ==
 # Адрес зашит внутрь штрихов QR, текстом его в листе искать бессмысленно.
 check("ссылка талона строится из базового адреса и кода",
       sheet.talon_url("ABC234") == sheet.BASE_URL + "/?t=ABC234", sheet.talon_url("ABC234"))
-check("в базовый адрес вшито mDNS-имя, а не меняющийся IP",
-      "MacBook.local" in sheet.BASE_URL or "AITALON_BASE_URL" in os.environ, sheet.BASE_URL)
+check("базовый адрес не перебивает явную настройку оператора",
+      sheet.base_url({"AITALON_BASE_URL": "http://192.168.1.55:8000"}) == "http://192.168.1.55:8000",
+      sheet.base_url({"AITALON_BASE_URL": "http://192.168.1.55:8000"}))
+
+print("\n  адрес QR строится на машине оператора, а не зашит в код")
+here = socket.gethostname().strip()
+lan = sheet.lan_ip()
+check("на этой машине в адресе её имя или её сетевой адрес",
+      here in sheet.default_base_url() or (lan and lan in sheet.default_base_url()),
+      "{} | имя {!r} | адрес {!r}".format(sheet.default_base_url(), here, lan))
+check("машина с mDNS-имем отдаёт его как есть",
+      sheet.default_base_url(lambda: "Dell-2.local", lambda: "10.0.0.5")
+      == "http://Dell-2.local:8000", sheet.default_base_url(lambda: "Dell-2.local", lambda: "10.0.0.5"))
+check("машина без mDNS-имени (Linux, Windows) отдаёт свой сетевой адрес",
+      sheet.default_base_url(lambda: "ubuntu", lambda: "10.0.0.5")
+      == "http://10.0.0.5:8000", sheet.default_base_url(lambda: "ubuntu", lambda: "10.0.0.5"))
+check("если и адреса нет, остаётся имя машины, а не чужая заглушка",
+      sheet.default_base_url(lambda: "ubuntu", lambda: "") == "http://ubuntu:8000",
+      sheet.default_base_url(lambda: "ubuntu", lambda: ""))
+check("в коде не осталось имени конкретной машины",
+      "MacBook" not in (ROOT / "app/sheet.py").read_text(encoding="utf-8")
+      or "MacBook" in here, "app/sheet.py всё ещё держит чужое имя")
 sheet_codes = tickets.document_codes(new_id)
 check("на листе напечатаны сами коды и по одному QR на талон",
       all(c in r.text for c in sheet_codes) and r.text.count("<svg") == 12,

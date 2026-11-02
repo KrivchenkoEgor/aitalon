@@ -7,14 +7,49 @@ PDF делает тот же Chromium, что уже служит для Qwen, �
 """
 import os
 import pathlib
+import socket
 
 import segno
 
 from . import tickets
 
-# Адрес зашивается в QR на момент печати листа. Берём mDNS-имя, а не IP: роутер
-# может выдать машине другой адрес, а отпечатанные листки переиздавать дорого.
-BASE_URL = os.environ.get("AITALON_BASE_URL", "http://MacBook.local:8000")
+PORT = 8000
+
+
+def lan_ip():
+    """Сетевой адрес этой машины. UDP-сокет ничего не отправляет — он только
+    даёт ядру выбрать интерфейс, которым машина выходит в сеть."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
+
+def default_base_url(gethostname=socket.gethostname, ip=lan_ip, port=PORT):
+    """Адрес для QR по умолчанию: mDNS-имя машины, а если его нет — её сетевой адрес.
+
+    Раньше тут было вшито имя конкретной машины, и на любой другой установка
+    печатала талоны, ведущие в никуда. Имя (.local) переживает смену адреса
+    роутером, IP точный, но протухает — поэтому имя предпочтительно, а на Linux и
+    Windows, где его нет, берётся адрес. Оператор видит итог на странице
+    операторской («в QR-код зашит адрес …») и может задать свой через AITALON_BASE_URL.
+    """
+    name = (gethostname() or "").strip()
+    host = name if name.endswith(".local") else (ip() or name)
+    return "http://{}:{}".format(host, port)
+
+
+def base_url(env=None, gethostname=socket.gethostname, ip=lan_ip, port=PORT):
+    env = os.environ if env is None else env
+    return env.get("AITALON_BASE_URL") or default_base_url(gethostname, ip, port)
+
+
+# Адрес зашивается в QR на момент печати листа.
+BASE_URL = base_url()
 PER_SHEET = 10
 
 
